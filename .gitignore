@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 .venv/
+node_modules/
 allure-results/
 allure-report/
 artifacts/

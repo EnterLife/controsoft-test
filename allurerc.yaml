@@ -1,0 +1,12 @@
+name: Signal Monitor QA
+output: ./allure-report
+plugins:
+  awesome:
+    options:
+      singleFile: false
+      reportLanguage: ru
+      reportName: Signal Monitor QA Report
+      groupBy:
+        - epic
+        - feature
+        - story

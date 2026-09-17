@@ -73,6 +73,12 @@ TCP-соединение → чтение и разбор данных → об�
 значения преобразуются в число. Для изменяющихся сигналов намеренно не задано
 точное значение. Сценарий отмечен маркерами `smoke`, `ui` и `linux`.
 
+В Allure сценарий имеет продуктовое деление `Desktop signal monitor` (Epic) →
+`TCP connection` (Feature) → `Display received signals` (Story). Это деление
+описывает функцию продукта, тогда как pytest-маркеры используются для выбора
+тестов по скорости, уровню и требованиям к окружению. Отдельный продуктовый
+маркер для единственного сценария не добавлен.
+
 ## Подготовка Linux-окружения
 
 Тест рассчитан на графическую сессию Linux с доступным AT-SPI. Для Ubuntu/Debian:
@@ -85,6 +91,7 @@ gsettings set org.gnome.desktop.interface toolkit-accessibility true
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 python -m pip install -e .
+npm install
 ```
 
 Qt-приложение запускается тестом с `QT_ACCESSIBILITY=1` и
@@ -101,6 +108,7 @@ Dogtail дополнительно требует `gnome-ponytail-daemon`; бе�
 
 ```bash
 python -m pytest -v \
+  --alluredir allure-results --clean-alluredir \
   --app-cmd "/opt/signal-monitor/bin/signal-monitor" \
   --simulator-cmd "/opt/signal-simulator/bin/simulator --port 2001" \
   --simulator-port 2001 \
@@ -121,6 +129,21 @@ python -m pytest -v ... --a11y-table-name "Signals"
 Доступные имена элементов конкретной сборки удобно сначала посмотреть в
 инспекторе accessibility `Accerciser`. Код завершает запущенные процессы даже
 при падении проверки и сохраняет их stdout/stderr в каталоге артефактов.
+
+## Allure-отчёт
+
+После запуска теста сформируйте и откройте интерактивный отчёт:
+
+```bash
+npx allure generate allure-results
+npx allure open allure-report
+```
+
+Конфигурация `allurerc.yaml` включает русскую локализацию и группировку по
+Epic/Feature/Story. В отчёте видны четыре бизнес-шага сценария. Если тест падает,
+его Allure-результат автоматически получает отдельные stdout/stderr-логи
+приложения и симулятора; при успешном прохождении они остаются только в каталоге
+`artifacts/`, чтобы не перегружать отчёт.
 
 ## Проверка вспомогательной логики
 

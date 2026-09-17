@@ -11,9 +11,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+import allure
 import pytest
 
 from signal_monitor_qa.support import is_tcp_port_listening
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item) -> Iterator[None]:
+    """Attach process logs to Allure when any test phase fails."""
+
+    outcome = yield
+    report = outcome.get_result()
+    if not report.failed:
+        return
+
+    artifacts_dir = item.funcargs.get("artifacts_dir")
+    if not isinstance(artifacts_dir, Path):
+        return
+
+    for log_path in sorted(artifacts_dir.glob("*.log")):
+        if log_path.is_file():
+            allure.attach.file(
+                log_path,
+                name=f"{report.when}: {log_path.name}",
+                attachment_type=allure.attachment_type.TEXT,
+            )
 
 
 @dataclass(frozen=True)
