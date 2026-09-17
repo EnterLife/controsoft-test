@@ -3,99 +3,30 @@
 from __future__ import annotations
 
 import math
-import time
-from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
-from dogtail.tree import root
+import pytest
+from dogtail.tree import SearchError, root
 
+from signal_monitor_qa.support import (
+    has_complete_signal_rows,
+    parse_number,
+    read_table,
+    wait_until,
+)
 
-T = TypeVar("T")
-
-
-def wait_until(
-    action: Callable[[], T],
-    condition: Callable[[T], bool],
-    *,
-    timeout: float,
-    description: str,
-) -> T:
-    """Poll a UI state until it is ready, avoiding a fixed synchronization sleep."""
-
-    deadline = time.monotonic() + timeout
-    last_value: T | None = None
-    last_error: Exception | None = None
-
-    while time.monotonic() < deadline:
-        try:
-            last_value = action()
-            if condition(last_value):
-                return last_value
-        except Exception as error:  # UI nodes may not exist during startup.
-            last_error = error
-        time.sleep(0.2)
-
-    details = f" Last value: {last_value!r}."
-    if last_error is not None:
-        details += f" Last UI error: {last_error!r}."
-    raise AssertionError(f"Timed out waiting for {description}.{details}")
+pytestmark = [pytest.mark.smoke, pytest.mark.ui, pytest.mark.linux]
 
 
 def find_table(application: Any, preferred_name: str) -> Any:
     """Find the signals table by stable name, then fall back to its AT-SPI role."""
 
     try:
-        return application.child(
-            name=preferred_name, role_name="table", retry=False
-        )
-    except Exception:
+        return application.child(name=preferred_name, role_name="table", retry=False)
+    except SearchError:
         return application.find_child(
             lambda node: node.role_name in {"table", "tree table"}, retry=False
         )
-
-
-def read_table(table: Any) -> list[list[str]]:
-    """Read visible cells through the standard AT-SPI table interface."""
-
-    rows: list[list[str]] = []
-    for row_index in range(table.get_n_rows()):
-        row: list[str] = []
-        for column_index in range(table.get_n_columns()):
-            cell = table.get_accessible_at(row_index, column_index)
-            # Qt commonly exposes cell text as the accessible name. The text
-            # fallback also supports implementations that expose a text object.
-            value = (getattr(cell, "name", "") or "").strip()
-            if not value:
-                try:
-                    value = (cell.text or "").strip()
-                except Exception:
-                    value = ""
-            row.append(value)
-        rows.append(row)
-    return rows
-
-
-def parse_number(raw_value: str) -> float:
-    """Accept decimal point or comma, as both are common in a Russian locale."""
-
-    return float(raw_value.strip().replace(" ", "").replace(",", "."))
-
-
-def has_complete_signal_rows(rows: list[list[str]]) -> bool:
-    """Return true only after all 10 rows contain usable values."""
-
-    if len(rows) != 10 or any(len(row) < 5 for row in rows):
-        return False
-
-    for signal_id, name, raw_value, quality, timestamp, *_ in rows:
-        if not all(field.strip() for field in (signal_id, name, quality, timestamp)):
-            return False
-        try:
-            if not math.isfinite(parse_number(raw_value)):
-                return False
-        except ValueError:
-            return False
-    return True
 
 
 def test_connect_displays_ten_valid_signals(running_system: dict[str, object]) -> None:
@@ -120,6 +51,7 @@ def test_connect_displays_ten_valid_signals(running_system: dict[str, object]) -
         lambda node: node.showing and node.sensitive,
         timeout=timeout,
         description="enabled Connect button",
+        retry_exceptions=(SearchError,),
     )
 
     connect_button.click()
@@ -129,6 +61,7 @@ def test_connect_displays_ten_valid_signals(running_system: dict[str, object]) -
         lambda node: node is not None,
         timeout=timeout,
         description="signals table",
+        retry_exceptions=(SearchError,),
     )
     rows = wait_until(
         lambda: read_table(table),

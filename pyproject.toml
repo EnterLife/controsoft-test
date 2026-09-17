@@ -13,5 +13,14 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "--strict-markers"
+addopts = "-ra --strict-markers"
+pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "smoke: critical startup and happy-path checks",
+    "ui: desktop user-interface tests",
+    "linux: tests that require a Linux graphical session",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
