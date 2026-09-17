@@ -36,6 +36,7 @@ def test_connect_displays_ten_valid_signals(running_system: dict[str, object]) -
     app_name = str(running_system["app_name"])
     table_name = str(running_system["table_name"])
 
+    # Wait for the external Qt application and its enabled connection control.
     application = wait_until(
         lambda: next(
             (node for node in root.applications() if node.name == app_name), None
@@ -54,8 +55,11 @@ def test_connect_displays_ten_valid_signals(running_system: dict[str, object]) -
         retry_exceptions=(SearchError,),
     )
 
+    # Reproduce the user action that starts the TCP data flow.
     connect_button.click()
 
+    # Wait for one complete snapshot instead of asserting against a partially
+    # populated table while asynchronous signal updates are still arriving.
     table = wait_until(
         lambda: find_table(application, table_name),
         lambda node: node is not None,
@@ -70,6 +74,8 @@ def test_connect_displays_ten_valid_signals(running_system: dict[str, object]) -
         description="exactly 10 signal rows with five columns",
     )
 
+    # Verify the user-visible contract without binding the test to changing
+    # sine/random values produced by the simulator.
     signal_ids: list[str] = []
     for row_number, row in enumerate(rows, start=1):
         signal_id, name, raw_value, quality, timestamp = row[:5]
