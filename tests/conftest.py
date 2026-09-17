@@ -9,8 +9,34 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
+import allure
 import pytest
+
+from signal_monitor_qa.support import is_tcp_port_listening
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item) -> Iterator[None]:
+    """Attach process logs to Allure when any test phase fails."""
+
+    outcome = yield
+    report = outcome.get_result()
+    if not report.failed:
+        return
+
+    artifacts_dir = item.funcargs.get("artifacts_dir")
+    if not isinstance(artifacts_dir, Path):
+        return
+
+    for log_path in sorted(artifacts_dir.glob("*.log")):
+        if log_path.is_file():
+            allure.attach.file(
+                log_path,
+                name=f"{report.when}: {log_path.name}",
+                attachment_type=allure.attachment_type.TEXT,
+            )
 
 
 @dataclass(frozen=True)
@@ -21,12 +47,20 @@ class ProcessLogs:
     stderr: Path
 
 
+@dataclass(frozen=True)
+class ManagedProcess:
+    """A child process together with its diagnostics and owned file handles."""
+
+    process: subprocess.Popen[str]
+    logs: ProcessLogs
+    stdout_file: TextIO
+    stderr_file: TextIO
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("signal monitor")
     group.addoption("--app-cmd", help="Command used to start the desktop app")
-    group.addoption(
-        "--simulator-cmd", help="Command used to start the TCP simulator"
-    )
+    group.addoption("--simulator-cmd", help="Command used to start the TCP simulator")
     group.addoption(
         "--simulator-port",
         type=int,
@@ -48,6 +82,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=15.0,
         help="Maximum wait for process/UI startup in seconds (default: 15)",
     )
+    group.addoption(
+        "--artifacts-dir",
+        type=Path,
+        default=Path("artifacts"),
+        help="Directory for application and simulator logs (default: artifacts)",
+    )
 
 
 def _required_option(request: pytest.FixtureRequest, name: str) -> str:
@@ -63,7 +103,7 @@ def _start_process(
     process_name: str,
     *,
     environment: dict[str, str] | None = None,
-) -> tuple[subprocess.Popen[str], ProcessLogs]:
+) -> ManagedProcess:
     """Start a process without a shell and redirect output to diagnostic files."""
 
     stdout_path = log_dir / f"{process_name}.stdout.log"
@@ -85,96 +125,104 @@ def _start_process(
         stderr_file.close()
         raise
 
-    # Keep references so the files remain open while the child process writes.
-    process._qa_log_files = (stdout_file, stderr_file)  # type: ignore[attr-defined]
-    return process, ProcessLogs(stdout_path, stderr_path)
+    return ManagedProcess(
+        process=process,
+        logs=ProcessLogs(stdout_path, stderr_path),
+        stdout_file=stdout_file,
+        stderr_file=stderr_file,
+    )
 
 
-def _assert_still_running(
-    process: subprocess.Popen[str], process_name: str, logs: ProcessLogs
-) -> None:
+def _assert_still_running(managed_process: ManagedProcess, process_name: str) -> None:
     """Fail early when a child exits during its short initialization phase."""
 
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
-        exit_code = process.poll()
+        exit_code = managed_process.process.poll()
         if exit_code is not None:
             pytest.fail(
                 f"{process_name} exited with code {exit_code}; "
-                f"see {logs.stdout} and {logs.stderr}",
+                f"see {managed_process.logs.stdout} and {managed_process.logs.stderr}",
                 pytrace=False,
             )
         time.sleep(0.05)
 
 
-def _is_tcp_port_listening(port: int) -> bool:
-    """Check Linux TCP tables without opening a connection to the simulator."""
-
-    expected_port = f"{port:04X}"
-    for table_path in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
-        try:
-            lines = table_path.read_text(encoding="ascii").splitlines()[1:]
-        except OSError:
-            continue
-
-        for line in lines:
-            fields = line.split()
-            if len(fields) < 4:
-                continue
-            local_address, connection_state = fields[1], fields[3]
-            local_port = local_address.rsplit(":", maxsplit=1)[-1]
-            if connection_state == "0A" and local_port.upper() == expected_port:
-                return True
-    return False
-
-
 def _wait_for_simulator(
-    process: subprocess.Popen[str],
-    logs: ProcessLogs,
+    managed_process: ManagedProcess,
     *,
     port: int,
     timeout: float,
 ) -> None:
     """Wait until the simulator listens, failing early if its process exits."""
 
+    if timeout <= 0:
+        pytest.fail("Startup timeout must be positive", pytrace=False)
+
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        exit_code = process.poll()
+    while True:
+        exit_code = managed_process.process.poll()
         if exit_code is not None:
             pytest.fail(
                 f"Simulator exited with code {exit_code}; "
-                f"see {logs.stdout} and {logs.stderr}",
+                f"see {managed_process.logs.stdout} and "
+                f"{managed_process.logs.stderr}",
                 pytrace=False,
             )
-        if _is_tcp_port_listening(port):
+        if is_tcp_port_listening(port):
             return
-        time.sleep(0.05)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
 
     pytest.fail(
         f"Simulator did not listen on local TCP port {port} within {timeout:g}s; "
-        f"see {logs.stdout} and {logs.stderr}",
+        f"see {managed_process.logs.stdout} and {managed_process.logs.stderr}",
         pytrace=False,
     )
 
 
-def _stop_process(process: subprocess.Popen[str]) -> None:
+def _stop_process(managed_process: ManagedProcess) -> None:
     """Terminate a child gracefully and always release its log handles."""
 
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+    try:
+        if managed_process.process.poll() is None:
+            managed_process.process.terminate()
+            try:
+                managed_process.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                managed_process.process.kill()
+                managed_process.process.wait(timeout=5)
+    finally:
+        managed_process.stdout_file.close()
+        managed_process.stderr_file.close()
 
-    for log_file in getattr(process, "_qa_log_files", ()):
-        log_file.close()
+
+@pytest.fixture
+def artifacts_dir(request: pytest.FixtureRequest) -> Path:
+    """Create a stable, per-test directory for diagnostic process logs."""
+
+    root = request.config.getoption("--artifacts-dir")
+    safe_name = "".join(
+        character if character.isalnum() or character in "-_" else "_"
+        for character in request.node.nodeid
+    )
+    path = root / safe_name
+    path.mkdir(parents=True, exist_ok=True)
+    for log_name in (
+        "application.stdout.log",
+        "application.stderr.log",
+        "simulator.stdout.log",
+        "simulator.stderr.log",
+    ):
+        (path / log_name).unlink(missing_ok=True)
+    return path
 
 
 @pytest.fixture
 def running_system(
-    request: pytest.FixtureRequest, tmp_path: Path
+    request: pytest.FixtureRequest, artifacts_dir: Path
 ) -> Iterator[dict[str, object]]:
     """Launch simulator first, then AUT, and tear both down after the test."""
 
@@ -183,16 +231,20 @@ def running_system(
     app_name = _required_option(request, "--a11y-app-name")
     simulator_port = request.config.getoption("--simulator-port")
     startup_timeout = request.config.getoption("--startup-timeout")
+    if not 1 <= simulator_port <= 65535:
+        pytest.fail(
+            f"Simulator port must be in range 1..65535, got {simulator_port}",
+            pytrace=False,
+        )
+    if startup_timeout <= 0:
+        pytest.fail("Startup timeout must be positive", pytrace=False)
 
-    simulator, simulator_logs = _start_process(
-        simulator_cmd, tmp_path, "simulator"
-    )
-    app: subprocess.Popen[str] | None = None
+    simulator = _start_process(simulator_cmd, artifacts_dir, "simulator")
+    app: ManagedProcess | None = None
 
     try:
         _wait_for_simulator(
             simulator,
-            simulator_logs,
             port=simulator_port,
             timeout=startup_timeout,
         )
@@ -204,19 +256,20 @@ def running_system(
                 "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
             }
         )
-        app, app_logs = _start_process(
+        app = _start_process(
             app_cmd,
-            tmp_path,
+            artifacts_dir,
             "application",
             environment=app_environment,
         )
-        _assert_still_running(app, "Application", app_logs)
+        _assert_still_running(app, "Application")
 
         yield {
             "app_name": app_name,
             "table_name": request.config.getoption("--a11y-table-name"),
             "timeout": startup_timeout,
-            "logs": {"application": app_logs, "simulator": simulator_logs},
+            "logs": {"application": app.logs, "simulator": simulator.logs},
+            "artifacts_dir": artifacts_dir,
         }
     finally:
         # Keep simulator cleanup guaranteed even if stopping the AUT raises.

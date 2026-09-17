@@ -1,0 +1,7 @@
+{
+  "name": "controsoft-qa-assignment-report",
+  "private": true,
+  "devDependencies": {
+    "allure": "3.17.0"
+  }
+}
