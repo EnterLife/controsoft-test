@@ -33,6 +33,7 @@ def find_table(application: Any, preferred_name: str) -> Any:
 @allure.epic("Desktop signal monitor")
 @allure.feature("TCP connection")
 @allure.story("Display received signals")
+@allure.severity(allure.severity_level.CRITICAL)
 @allure.title("Connection displays 10 valid signals")
 @allure.description(
     "The application connects to the simulator and displays one complete, "

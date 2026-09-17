@@ -94,6 +94,9 @@ python -m pip install -e .
 npm install
 ```
 
+Node.js и npm нужны только для установки Allure CLI и формирования отчёта.
+Для запуска самого pytest-теста достаточно Python-зависимостей.
+
 Qt-приложение запускается тестом с `QT_ACCESSIBILITY=1` и
 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`. После первого включения accessibility
 может потребоваться перезапуск графической сессии. Перед запуском приложения
